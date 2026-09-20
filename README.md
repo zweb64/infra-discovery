@@ -77,6 +77,71 @@ messages and tracebacks are not retained, to avoid exposing sensitive diagnostic
 Process-control exceptions such as `KeyboardInterrupt`, and errors advancing the
 input iterable, propagate. Inventory validation remains the loader's responsibility.
 
+## Linux discovery over SSH
+
+`LinuxSSHCollector` implements the same collector protocol and returns the
+existing `LinuxFacts(distribution, kernel_release)`. Register it explicitly:
+
+```python
+import os
+
+from infra_discovery.linux_ssh import LinuxSSHCollector, SSHCredentials
+
+# Supply these values at runtime, separately from inventory.
+credentials = SSHCredentials(
+    username=os.environ["DISCOVERY_SSH_USERNAME"],
+    key_filename=os.environ["DISCOVERY_SSH_KEY_FILE"],
+    passphrase=os.environ.get("DISCOVERY_SSH_KEY_PASSPHRASE"),
+)
+linux = LinuxSSHCollector(
+    credentials=credentials,
+    known_hosts=os.environ["DISCOVERY_SSH_KNOWN_HOSTS"],
+    connection_timeout=10,
+    command_timeout=10,
+)
+outcomes = discover(targets, {TargetKind.LINUX: linux}, max_workers=4)
+```
+
+Alternatively supply `password=` instead of `key_filename=`/`passphrase=`.
+Exactly one authentication method is required. Credentials and the known-hosts
+path are excluded from object representations; they are never added to targets,
+facts, or outcomes. Do not serialize the runtime credential object. This module
+does not load environment variables itself, prompt, or store credentials.
+
+Paramiko is the sole added direct dependency. Each call creates and closes its
+own client and channel. The collector's configuration is immutable, so it can be
+shared across discovery workers. One collector uses one credential set and SSH
+port (default 22); per-target credential lookup is outside v1. SSH agents, implicit
+key searches, and SSH client configuration files are not used. An explicit
+OpenSSH known-hosts file is required; provision trusted host keys beforehand.
+Unknown and changed keys fail without automatic enrollment.
+
+The fixed, unprivileged command checks `uname -s`, reads `uname -r`, and reads
+`/etc/os-release`, falling back to `/usr/lib/os-release` when the former is not
+readable. Distribution is `NAME`, with `ID` as fallback. Parsing never executes
+the release file. A POSIX-compatible login shell, `uname`, `cat`, and a valid
+UTF-8 os-release file are required; unsupported or malformed hosts fail without
+partial facts. No additional facts or real network-device collector are included.
+
+TCP connection, banner, and authentication each have an explicit timeout;
+channel opening has its own timeout. A separate command deadline covers the
+exec acknowledgement, both output streams, EOF, and exit status, including
+trickling output. Combined stdout/stderr is limited to 64 KiB. Nonzero or missing
+exit status fails. These are phase limits, not a single whole-target deadline:
+OS hostname resolution and local key/known-hosts file access remain subject to
+OS behavior. Use IP targets when predictable DNS-independent timing is needed.
+
+All ordinary collection failures, including authentication, host-key checks,
+connection errors, command failures, malformed data, and cleanup errors, raise
+a generic `LinuxSSHError`. Existing discovery maps it to `COLLECTION_FAILED`
+and continues other targets. Raw exception chains, stderr, and this collector's
+Paramiko transport logs are suppressed to keep connection diagnostics private.
+Process-control exceptions still propagate after cleanup.
+
+SSH tests replace every client with fakes, exercise real deadline timers, and
+check concurrent session isolation. They require no SSH server, keys, credentials,
+or infrastructure access. Actual SSH interoperability is not tested by this suite.
+
 ## Development
 
 From the repository root, create and activate a virtual environment (PowerShell):
