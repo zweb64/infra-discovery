@@ -36,7 +36,7 @@ from infra_discovery.models import TargetKind
 outcomes = discover(targets, {
     TargetKind.NETWORK: FakeNetworkCollector(),
     TargetKind.LINUX: FakeLinuxCollector(),
-})
+}, max_workers=4)
 for outcome in outcomes:
     if outcome.succeeded:
         print(outcome.target.id, outcome.facts)
@@ -49,11 +49,25 @@ perform no network access. Network facts contain a platform and interface names;
 Linux facts contain a distribution and kernel release. A future collector only
 needs to implement the `Collector` protocol: declare `kind` and implement
 `collect(target)` to return the matching facts type or raise an exception.
-Collectors must not mutate targets.
+Collectors must not mutate targets. With concurrency enabled, the same collector
+instance can receive simultaneous calls; its state and resources must be safe for
+that use. Callers must also leave targets unchanged until discovery returns.
 
-`discover` processes any iterable of `Target` objects sequentially, returning one
+`discover` accepts any finite iterable of `Target` objects, returning one
 outcome per input in order, including repeated targets. Each outcome retains the
 original target reference and exactly one of facts or a `DiscoveryError` enum.
+The keyword-only `max_workers` defaults to `1`, preserving sequential calls on the
+calling thread. Set it above one to use a bounded standard-library thread pool,
+suitable for future blocking SSH/network collectors. Collection start and finish
+order are unspecified in concurrent mode; returned outcomes always follow input
+order. A nonpositive integer, boolean, or non-integer raises `ValueError` before
+target iteration, even for empty input. No values are coerced.
+
+The worker count bounds active collection calls, not the pending work queue:
+concurrent discovery eagerly submits the finite input and returns a complete list.
+It waits for workers on exit and provides no timeout or forced cancellation;
+future network collectors must enforce their own I/O timeouts.
+
 Facts and outcomes are frozen dataclasses; existing targets remain mutable.
 There is no default collector or fallback route. Invalid registry keys, mismatched
 collector kinds, and missing callable methods raise `ValueError` before iteration.

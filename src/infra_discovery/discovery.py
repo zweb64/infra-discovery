@@ -1,6 +1,8 @@
-"""Sequential routing and per-target failure isolation."""
+"""Bounded discovery orchestration and per-target failure isolation."""
 
 from collections.abc import Iterable, Mapping
+from concurrent.futures import ThreadPoolExecutor
+from functools import partial
 
 from infra_discovery.collectors import Collector
 from infra_discovery.models import (
@@ -14,9 +16,18 @@ from infra_discovery.models import (
 
 
 def discover(
-    targets: Iterable[Target], collectors: Mapping[TargetKind, Collector]
+    targets: Iterable[Target],
+    collectors: Mapping[TargetKind, Collector],
+    *,
+    max_workers: int = 1,
 ) -> list[DiscoveryOutcome]:
-    """Process targets in order, preserving duplicates and original targets.
+    """Return outcomes in input order, preserving duplicates and original targets.
+
+    max_workers must be a positive integer (not bool); invalid values raise
+    ValueError before consuming targets. The default runs sequentially; larger
+    values share collector instances across at most max_workers threads.
+    Collectors must support concurrent calls when concurrency is enabled.
+    Results retain input order even when collection finishes out of order.
 
     Invalid registry entries raise ValueError before consuming targets. Missing
     routes, invalid target kinds, wrong result types, and collector exceptions
@@ -24,6 +35,13 @@ def discover(
     BaseException (including cancellation via KeyboardInterrupt) propagates.
     Input iteration errors propagate; inputs must be Target objects.
     """
+    if (
+        isinstance(max_workers, bool)
+        or not isinstance(max_workers, int)
+        or max_workers < 1
+    ):
+        raise ValueError("max_workers must be a positive integer (not bool).")
+
     registry = dict(collectors)
     for kind, collector in registry.items():
         if (
@@ -33,31 +51,27 @@ def discover(
         ):
             raise ValueError("Collector registration must match a supported target kind.")
 
-    outcomes = []
-    for target in targets:
-        if not isinstance(target.kind, TargetKind):
-            outcomes.append(
-                DiscoveryOutcome(target, error=DiscoveryError.INVALID_TARGET_KIND)
-            )
-            continue
-        collector = registry.get(target.kind)
-        if collector is None:
-            outcomes.append(
-                DiscoveryOutcome(target, error=DiscoveryError.MISSING_COLLECTOR)
-            )
-            continue
-        try:
-            facts = collector.collect(target)
-        except Exception:
-            outcomes.append(
-                DiscoveryOutcome(target, error=DiscoveryError.COLLECTION_FAILED)
-            )
-            continue
-        expected = NetworkFacts if target.kind is TargetKind.NETWORK else LinuxFacts
-        if not isinstance(facts, expected):
-            outcomes.append(
-                DiscoveryOutcome(target, error=DiscoveryError.INVALID_RESULT)
-            )
-        else:
-            outcomes.append(DiscoveryOutcome(target, facts=facts))
-    return outcomes
+    collect_one = partial(_discover_target, registry=registry)
+    if max_workers == 1:
+        return [collect_one(target) for target in targets]
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        return list(executor.map(collect_one, targets))
+
+
+def _discover_target(
+    target: Target, registry: Mapping[TargetKind, Collector]
+) -> DiscoveryOutcome:
+    """Route one target and translate collection failures into outcomes."""
+    if not isinstance(target.kind, TargetKind):
+        return DiscoveryOutcome(target, error=DiscoveryError.INVALID_TARGET_KIND)
+    collector = registry.get(target.kind)
+    if collector is None:
+        return DiscoveryOutcome(target, error=DiscoveryError.MISSING_COLLECTOR)
+    try:
+        facts = collector.collect(target)
+    except Exception:
+        return DiscoveryOutcome(target, error=DiscoveryError.COLLECTION_FAILED)
+    expected = NetworkFacts if target.kind is TargetKind.NETWORK else LinuxFacts
+    if not isinstance(facts, expected):
+        return DiscoveryOutcome(target, error=DiscoveryError.INVALID_RESULT)
+    return DiscoveryOutcome(target, facts=facts)
