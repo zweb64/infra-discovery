@@ -1,0 +1,6 @@
+[
+  {"id": "switch-01", "host": "switch-01.example.com", "kind": "network"},
+  {"id": "router-01", "host": "192.0.2.1", "kind": "network"},
+  {"id": "linux-01", "host": "linux-01.example.com", "kind": "linux"},
+  {"id": "linux-02", "host": "2001:db8::2", "kind": "linux"}
+]
