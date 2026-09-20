@@ -3,7 +3,7 @@
 from dataclasses import FrozenInstanceError
 import logging
 from threading import Barrier, Event, Lock, Thread
-from unittest.mock import Mock
+from unittest.mock import ANY, Mock
 
 import paramiko
 from paramiko.client import SSHClient as RealSSHClient
@@ -13,6 +13,7 @@ from infra_discovery import linux_ssh as ssh
 from infra_discovery.collectors import FakeNetworkCollector
 from infra_discovery.discovery import discover
 from infra_discovery.models import DiscoveryError, LinuxFacts, Target, TargetKind
+from tests.ssh_fakes import install_tcp_fakes
 
 
 RESPONSE = b'Linux\n6.1.0-example\nNAME="Example Linux"\nID=example\n'
@@ -64,6 +65,7 @@ class Channel:
 
 @pytest.fixture(autouse=True)
 def forbid_real_clients(monkeypatch):
+    install_tcp_fakes(monkeypatch)
     monkeypatch.setattr(ssh.paramiko, "SSHClient", Mock(
         side_effect=AssertionError("Real SSH is forbidden in tests")))
 
@@ -96,6 +98,7 @@ def test_success_and_explicit_security_options(setup):
     assert isinstance(client.set_missing_host_key_policy.call_args.args[0],
                       paramiko.RejectPolicy)
     client.connect.assert_called_once_with(
+        sock=ANY,
         hostname=item.host, port=22, username="example-user",
         password="synthetic-test-value", key_filename=None, passphrase=None,
         allow_agent=False, look_for_keys=False, timeout=2, banner_timeout=2,
