@@ -2,6 +2,94 @@
 
 Requires Python 3.11 or newer.
 
+## Command-line application
+
+Install with `python -m pip install .` (preferably in an activated virtual
+environment), then run `infra-discovery --help` from any directory. The installed
+environment's Scripts directory (Windows) or bin directory must be on PATH.
+
+```text
+infra-discovery INVENTORY --config CONNECTIONS.json [--max-workers N] [--json]
+```
+
+The inventory is the JSON format below. Connection configuration is separate,
+contains no passwords or passphrases, and uses these optional per-kind sections:
+
+```json
+{
+  "linux": {
+    "username": "discovery",
+    "known_hosts": "trusted_hosts",
+    "key_filename": "discovery_identity",
+    "prompt_passphrase": true
+  },
+  "network": {
+    "username": "discovery",
+    "known_hosts": "trusted_hosts",
+    "port": 22,
+    "connection_timeout": 10,
+    "command_timeout": 10,
+    "platforms": {
+      "switch-1": "arista_eos",
+      "router-1": "juniper_junos"
+    }
+  }
+}
+```
+
+Only kinds present in inventory need a section or credentials. All supplied
+sections are validated before prompting. Unknown fields and duplicate keys are
+rejected. Each required section needs `username` and a readable `known_hosts`
+file. Relative SSH file paths resolve against the configuration directory;
+`~` is expanded. Provision trusted host keys separately. There is no insecure
+host-key bypass. Ports default to 22 and both timeouts to 10 seconds; timeouts
+must be finite and positive. Every network target needs a platform entry.
+
+Omit `key_filename` to request a password through a non-echoing terminal prompt.
+With a key file, set `prompt_passphrase: true` for an encrypted key; otherwise no
+secret prompt occurs. Passwords and passphrases cannot be supplied through CLI
+flags or configuration. Prompts do not contaminate JSON stdout, and echoing
+fallback is rejected. Credentials remain in memory only; they are never
+automatically persisted or serialized. Protect private key files using OS file
+permissions. Unattended execution requires an explicitly configured key that
+does not need a passphrase prompt; no environment-secret or stdin protocol is
+provided in v1. One credential set/port per kind is supported.
+
+The default output prints one success/failure line per target with its facts or
+normalized error, then totals. Strings are quoted and control characters escaped.
+`--json` writes a single deterministic document to stdout, in inventory order:
+
+```json
+{
+  "schema_version": 1,
+  "results": [
+    {
+      "target": {"id": "server-1", "host": "192.0.2.10", "kind": "linux"},
+      "status": "success",
+      "facts": {"distribution": "Example Linux", "kernel_release": "6.1-example"},
+      "error": null
+    }
+  ],
+  "summary": {"total": 1, "succeeded": 1, "failed": 0}
+}
+```
+
+Network facts contain `platform` and an `interfaces` array. Failed results use
+`status: "failure"`, `facts: null`, and an error object with `code` (the backend
+enum name, such as `COLLECTION_FAILED`) and normalized `message`. Raw SSH
+exception details are never emitted. No credentials are included in the schema.
+Each target appears exactly once. An empty inventory succeeds with an empty
+results array and zero totals, and needs no configuration. Input errors and
+interruption diagnostics go to stderr without a JSON document on stdout.
+
+Exit codes are **0** for all targets successful (or help), **1** for any target
+failure, **2** for invocation/configuration or output I/O errors, and **130** for
+KeyboardInterrupt. `--max-workers` defaults to 1 and accepts positive integers.
+Cancellation follows the existing backend: concurrent workers finish/timeout
+before shutdown, so Ctrl+C may not return immediately. DNS/local file access
+retain the backend timing limitations described below. Results are buffered
+until discovery completes; streaming and per-target credentials are outside v1.
+
 ## Inventory loading
 
 Use a UTF-8 JSON array, as shown in
