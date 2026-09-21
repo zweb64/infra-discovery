@@ -4,8 +4,9 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "infra-discovery"
-version = "0.1.0"
-description = "Infrastructure discovery and inventory automation tool"
+version = "1.0.0"
+description = "Read-only Linux and network-device discovery over SSH"
+readme = "README.md"
 requires-python = ">=3.11"
 dependencies = ["paramiko>=3.5,<5"]
 
@@ -13,7 +14,7 @@ dependencies = ["paramiko>=3.5,<5"]
 infra-discovery = "infra_discovery.cli:main"
 
 [project.optional-dependencies]
-dev = ["pytest>=8.4"]
+dev = ["pytest>=8.4", "build>=1.2", "setuptools>=68"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

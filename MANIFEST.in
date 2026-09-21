@@ -1,0 +1,3 @@
+include AGENTS.md
+recursive-include examples *.json
+recursive-include tests *.py

@@ -1,1 +1,0 @@
-[{"id": "switch-01", "host": "switch.example.com", "kind": "network"}, {"id": "linux-01", "host": "192.0.2.2", "kind": "linux"}, {"id": "linux-02", "host": "2001:db8::2", "kind": "linux"}]

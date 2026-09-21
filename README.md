@@ -1,346 +1,331 @@
-# Infrastructure Discovery
+# infra-discovery
 
-Requires Python 3.11 or newer.
+Read-only infrastructure discovery over SSH for Linux hosts and supported network
+devices. Supply a validated JSON inventory and separate connection settings to
+collect Linux distribution/kernel information or network interface names.
 
-## Command-line application
+## Capabilities
 
-Install with `python -m pip install .` (preferably in an activated virtual
-environment), then run `infra-discovery --help` from any directory. The installed
-environment's Scripts directory (Windows) or bin directory must be on PATH.
+- Linux discovery and explicit Arista EOS / Juniper Junos network profiles.
+- Bounded concurrent collection with independent success or failure per target.
+- Strict inventory validation and structured domain models.
+- Explicit SSH host-key verification, password or key authentication, phase
+  timeouts, bounded command output, and session cleanup.
+- Human-readable summaries or deterministic, versioned JSON in inventory order.
+- Installable CLI and an offline pytest suite using simulated SSH sessions.
 
-```text
-infra-discovery INVENTORY --config CONNECTIONS.json [--max-workers N] [--json]
+Data flows from **inventory + connection configuration** through validation and
+credential prompting, then into the discovery worker pool. Each target is routed
+to its Linux or network collector, which uses the shared SSH transport. Results
+become structured outcomes and are formatted as text or JSON after all work ends.
+
+## Requirements and installation
+
+Python **3.11 or newer** is required. CI currently runs Python 3.14 on Ubuntu;
+this is not a claim that every Python/OS/device combination has been tested.
+Paramiko is the runtime dependency and is installed automatically by pip.
+
+From a cloned repository, create and activate a virtual environment:
+
+**Windows PowerShell**
+
+```powershell
+cd infra-discovery
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install .
+infra-discovery --help
 ```
 
-The inventory is the JSON format below. Connection configuration is separate,
-contains no passwords or passphrases, and uses these optional per-kind sections:
+**Linux/macOS**
+
+```sh
+cd infra-discovery
+python3 -m venv .venv
+. .venv/bin/activate
+python -m pip install .
+infra-discovery --help
+```
+
+Once installed, the command works outside the checkout while that environment is
+active. Installation requires dependencies available from a package index or a
+local wheelhouse. Discovery itself does not require Internet access, but does
+require SSH access to the configured targets.
+
+## CLI usage
+
+```text
+infra-discovery [-h] [--config CONFIG] [--max-workers MAX_WORKERS] [--json] inventory
+```
+
+`infra-discovery --help` describes these arguments:
+
+| Argument | Meaning |
+| --- | --- |
+| `inventory` | Path to a UTF-8 JSON inventory. |
+| `--config CONFIG` | Non-secret JSON connection configuration; required for nonempty inventories. |
+| `--max-workers MAX_WORKERS` | Positive integer; defaults to `1` (sequential). |
+| `--json` | Emit a single versioned JSON document to stdout. |
+| `-h`, `--help` | Show help and exit. |
+
+After preparing your local inventory, trusted host keys, and connection settings:
+
+```sh
+infra-discovery inventory.json --config connections.local.json
+infra-discovery inventory.json --config connections.local.json --max-workers 4 --json
+infra-discovery inventory.json --config connections.local.json --json > results.json
+```
+
+These commands contact the inventory targets. The examples below are placeholders
+and must be adapted before live use. For a safe offline CLI check, create an empty
+inventory (no configuration or credentials needed):
+
+```sh
+python -c "from pathlib import Path; Path('empty.json').write_text('[]', encoding='utf-8')"
+infra-discovery empty.json --json
+```
+
+## Inventory
+
+[`examples/inventory.example.json`](examples/inventory.example.json) contains:
+
+```json
+[
+  {"id": "switch-01", "host": "switch-01.example.com", "kind": "network"},
+  {"id": "router-01", "host": "192.0.2.1", "kind": "network"},
+  {"id": "linux-01", "host": "linux-01.example.com", "kind": "linux"},
+  {"id": "linux-02", "host": "2001:db8::2", "kind": "linux"}
+]
+```
+
+All names and addresses above are reserved for documentation. Copy the example
+to `inventory.json` and replace them with targets you are authorized to access.
+
+Each object must contain **exactly** `id`, `host`, and `kind`, all nonempty strings
+without surrounding whitespace. IDs must be unique. Kinds are case-sensitive:
+`linux` or `network`. Multiple entries may share a host. Host strings are preserved;
+the loader does not validate addresses, resolve names, or perform network access.
+Unknown fields, duplicate JSON keys, nonstandard constants, and malformed JSON are
+rejected before discovery. An empty array is valid. Do not add credentials, ports,
+or platforms to inventory entries; connection settings are separate.
+
+## Connection settings and credentials
+
+Copy [`examples/connections.example.json`](examples/connections.example.json) to
+`connections.local.json` alongside your local inventory:
 
 ```json
 {
   "linux": {
     "username": "discovery",
-    "known_hosts": "trusted_hosts",
-    "key_filename": "discovery_identity",
-    "prompt_passphrase": true
+    "known_hosts": "known_hosts.local"
   },
   "network": {
     "username": "discovery",
-    "known_hosts": "trusted_hosts",
+    "known_hosts": "known_hosts.local",
     "port": 22,
     "connection_timeout": 10,
     "command_timeout": 10,
     "platforms": {
-      "switch-1": "arista_eos",
-      "router-1": "juniper_junos"
+      "switch-01": "arista_eos",
+      "router-01": "juniper_junos"
     }
   }
 }
 ```
 
-Only kinds present in inventory need a section or credentials. All supplied
-sections are validated before prompting. Unknown fields and duplicate keys are
-rejected. Each required section needs `username` and a readable `known_hosts`
-file. Relative SSH file paths resolve against the configuration directory;
-`~` is expanded. Provision trusted host keys separately. There is no insecure
-host-key bypass. Ports default to 22 and both timeouts to 10 seconds; timeouts
-must be finite and positive. Every network target needs a platform entry.
+Provision `known_hosts.local` separately with trusted OpenSSH host-key entries.
+Verify keys through a trusted channel before using them. Unknown or changed keys
+fail the target; there is no automatic enrollment or insecure bypass.
 
-Omit `key_filename` to request a password through a non-echoing terminal prompt.
-With a key file, set `prompt_passphrase: true` for an encrypted key; otherwise no
-secret prompt occurs. Passwords and passphrases cannot be supplied through CLI
-flags or configuration. Prompts do not contaminate JSON stdout, and echoing
-fallback is rejected. Credentials remain in memory only; they are never
-automatically persisted or serialized. Protect private key files using OS file
-permissions. Unattended execution requires an explicitly configured key that
-does not need a passphrase prompt; no environment-secret or stdin protocol is
-provided in v1. One credential set/port per kind is supported.
+Only target kinds present in inventory need a section or credentials. All supplied
+sections are validated before prompting; unknown fields and duplicate keys are
+rejected. The supported section fields are:
 
-The default output prints one success/failure line per target with its facts or
-normalized error, then totals. Strings are quoted and control characters escaped.
-`--json` writes a single deterministic document to stdout, in inventory order:
+| Field | Requirement/default |
+| --- | --- |
+| `username` | Required nonblank string. |
+| `known_hosts` | Required readable host-key file. |
+| `key_filename` | Optional readable private-key file; otherwise prompt for a password. |
+| `prompt_passphrase` | Boolean, default `false`; `true` requires `key_filename` and prompts for its passphrase. |
+| `port` | Integer from 1 to 65535; default `22`. |
+| `connection_timeout` | Finite positive seconds; default `10`. |
+| `command_timeout` | Finite positive seconds; default `10`. |
+| `platforms` | Network section only: required object mapping every network target ID to `arista_eos` or `juniper_junos`. |
+
+Relative key and known-hosts paths resolve against the configuration file's
+directory, and `~` is expanded. For key authentication, add `key_filename` to the
+appropriate section; add `"prompt_passphrase": true` if the key is encrypted.
+
+Passwords and passphrases are entered through a non-echoing terminal prompt.
+They cannot be supplied through inventory, configuration, or CLI flags. Echoing
+fallback is rejected and prompts do not enter JSON stdout. Credentials remain in
+memory and are not automatically persisted or serialized; protect private keys
+with OS permissions. Unattended use requires an explicitly configured key that
+does not need a prompt. The CLI has no environment-secret or stdin-secret protocol.
+SSH agents, implicit key searches, and SSH client configuration files are not used.
+
+## Supported targets
+
+**Linux** requires a POSIX-compatible login shell, `uname`, `cat`, and a readable,
+valid UTF-8 `/etc/os-release` (or `/usr/lib/os-release` when the former is not
+readable). The fixed unprivileged command checks `uname -s`, reads `uname -r`, and
+reads the release file as data. Distribution comes from `NAME`, falling back to
+`ID`. Unsupported or malformed responses fail without partial facts.
+
+**Network devices** require an explicit platform selection for each target ID,
+noninteractive SSH exec support, and an account authorized to run the fixed
+read-only command directly:
+
+| Platform | Command | Returned interface names |
+| --- | --- | --- |
+| `arista_eos` | `show interfaces \| json` | Keys of the JSON `interfaces` object. |
+| `juniper_junos` | `show interfaces terse \| display xml \| no-more` | Physical and logical interfaces. |
+
+The returned platform is the configured family, not a detected OS version or
+hardware model. Interface names are validated, unique, and sorted. Empty interface
+lists, malformed responses, and command errors fail the target. Addresses,
+descriptions, and counters are discarded. There is no platform auto-detection,
+interactive terminal negotiation, privilege escalation, or other device support.
+
+## Output and exit codes
+
+Illustrative human-readable output (synthetic facts):
+
+```text
+SUCCESS "linux-01" (linux, "linux-01.example.com") {"distribution": "Example Linux", "kernel_release": "6.1-example"}
+SUCCESS "switch-01" (network, "switch-01.example.com") {"interfaces": ["Ethernet1", "Ethernet2"], "platform": "arista_eos"}
+FAILURE "router-01" (network, "192.0.2.1") Collector raised an exception.
+3 targets: 2 succeeded, 1 failed.
+```
+
+Strings are quoted and control characters escaped. `--json` emits sorted object
+keys and retains inventory order for results. A single-target success is:
 
 ```json
 {
-  "schema_version": 1,
   "results": [
     {
-      "target": {"id": "server-1", "host": "192.0.2.10", "kind": "linux"},
+      "error": null,
+      "facts": {
+        "distribution": "Example Linux",
+        "kernel_release": "6.1-example"
+      },
       "status": "success",
-      "facts": {"distribution": "Example Linux", "kernel_release": "6.1-example"},
-      "error": null
+      "target": {
+        "host": "linux-01.example.com",
+        "id": "linux-01",
+        "kind": "linux"
+      }
     }
   ],
-  "summary": {"total": 1, "succeeded": 1, "failed": 0}
+  "schema_version": 1,
+  "summary": {
+    "failed": 0,
+    "succeeded": 1,
+    "total": 1
+  }
 }
 ```
 
-Network facts contain `platform` and an `interfaces` array. Failed results use
-`status: "failure"`, `facts: null`, and an error object with `code` (the backend
-enum name, such as `COLLECTION_FAILED`) and normalized `message`. Raw SSH
-exception details are never emitted. No credentials are included in the schema.
-Each target appears exactly once. An empty inventory succeeds with an empty
-results array and zero totals, and needs no configuration. Input errors and
-interruption diagnostics go to stderr without a JSON document on stdout.
+Network `facts` contain `interfaces` (an array of strings) and `platform`. A failed
+result has `status: "failure"`, `facts: null`, and an `error` object, for example:
+`{"code": "COLLECTION_FAILED", "message": "Collector raised an exception."}`.
+Other domain error codes are `INVALID_TARGET_KIND`, `MISSING_COLLECTOR`, and
+`INVALID_RESULT`; normal validated CLI routing uses the matching collectors.
+No raw SSH exceptions or credentials are included. Every target appears once.
+Empty input produces an empty results array and zero totals. Input errors and
+interruption diagnostics go to stderr without a JSON result document.
 
-Exit codes are **0** for all targets successful (or help), **1** for any target
-failure, **2** for invocation/configuration or output I/O errors, and **130** for
-KeyboardInterrupt. `--max-workers` defaults to 1 and accepts positive integers.
-Cancellation follows the existing backend: concurrent workers finish/timeout
-before shutdown, so Ctrl+C may not return immediately. DNS/local file access
-retain the backend timing limitations described below. Results are buffered
-until discovery completes; streaming and per-target credentials are outside v1.
+| Exit code | Meaning |
+| --- | --- |
+| `0` | All targets succeeded, inventory was empty, or help was displayed. |
+| `1` | At least one target failed; results still include other targets. |
+| `2` | Invocation, input/configuration, or output I/O error. |
+| `130` | Keyboard interruption (Ctrl+C). |
 
-## Inventory loading
+## Concurrency, security, and v1 limitations
 
-Use a UTF-8 JSON array, as shown in
-[`examples/inventory.example.json`](examples/inventory.example.json). The example
-uses reserved example names and documentation addresses, with no credentials.
+`--max-workers` bounds active collection calls. Values above one use a thread pool;
+returned results remain in inventory order regardless of completion order. Each
+call owns its SSH session and resources. Work is submitted eagerly and results are
+buffered, so this is not a streaming or memory-bounded inventory processor.
 
-```python
-from infra_discovery.inventory import load_inventory
+Connection timing covers TCP address attempts and SSH setup/authentication after
+DNS resolution. The separate command deadline covers channel opening, exec
+acknowledgement, output, EOF, and exit status. Combined stdout/stderr is capped at
+64 KiB per target; nonzero or missing exit status fails. These are phase limits,
+not a whole-target deadline: OS DNS resolution, local file access, and private-key
+processing retain OS/library timing behavior. Ctrl+C may wait for concurrent
+workers to finish or time out.
 
-targets = load_inventory("examples/inventory.example.json")
-```
+Use accounts with only the permissions needed for the listed commands. Keep real
+inventories, connection settings, trusted-host files, private keys, and results
+out of version control. Output includes host identifiers and discovered facts and
+may itself be sensitive. Raw transport diagnostics are suppressed and errors are
+normalized, which intentionally limits troubleshooting detail.
 
-Each entry must contain exactly `id`, `host`, and `kind`, all nonempty strings
-without surrounding whitespace. Kinds are case-sensitive: `network` or `linux`.
-IDs must be unique; multiple entries may share a host. Host strings are preserved
-without address validation, name resolution, or network access.
+V1 supports one credential set, port, known-hosts file, and timeout configuration
+per target kind. It collects only the facts described above. There is no automatic
+retry, persistence, scheduling, cloud discovery, GUI, or API service. The offline
+suite checks behavior with simulated peers; it does not certify interoperability
+with particular Linux distributions or device OS releases. Validate those in your
+authorized environment before operational adoption.
 
-The loader returns existing `Target` objects in inventory order, with `TargetKind`
-enum values. An empty array returns an empty list. Invalid content raises
-`InventoryError` (a `ValueError`) without returning a partial inventory. Unknown
-fields, duplicate JSON keys, and nonstandard JSON constants are rejected. File
-access errors propagate as `OSError`. Validation messages identify entry positions
-and field names without echoing inventory values.
+## Development and verification
 
-## Offline discovery
+In an activated virtual environment at the repository root:
 
-```python
-from infra_discovery.collectors import FakeLinuxCollector, FakeNetworkCollector
-from infra_discovery.discovery import discover
-from infra_discovery.models import TargetKind
-
-outcomes = discover(targets, {
-    TargetKind.NETWORK: FakeNetworkCollector(),
-    TargetKind.LINUX: FakeLinuxCollector(),
-}, max_workers=4)
-for outcome in outcomes:
-    if outcome.succeeded:
-        print(outcome.target.id, outcome.facts)
-    else:
-        print(outcome.target.id, outcome.error.value)
-```
-
-The fake collectors return fixed synthetic facts, independent of the host, and
-perform no network access. Network facts contain a platform and interface names;
-Linux facts contain a distribution and kernel release. A future collector only
-needs to implement the `Collector` protocol: declare `kind` and implement
-`collect(target)` to return the matching facts type or raise an exception.
-Collectors must not mutate targets. With concurrency enabled, the same collector
-instance can receive simultaneous calls; its state and resources must be safe for
-that use. Callers must also leave targets unchanged until discovery returns.
-
-`discover` accepts any finite iterable of `Target` objects, returning one
-outcome per input in order, including repeated targets. Each outcome retains the
-original target reference and exactly one of facts or a `DiscoveryError` enum.
-The keyword-only `max_workers` defaults to `1`, preserving sequential calls on the
-calling thread. Set it above one to use a bounded standard-library thread pool,
-suitable for future blocking SSH/network collectors. Collection start and finish
-order are unspecified in concurrent mode; returned outcomes always follow input
-order. A nonpositive integer, boolean, or non-integer raises `ValueError` before
-target iteration, even for empty input. No values are coerced.
-
-The worker count bounds active collection calls, not the pending work queue:
-concurrent discovery eagerly submits the finite input and returns a complete list.
-It waits for workers on exit and provides no timeout or forced cancellation;
-future network collectors must enforce their own I/O timeouts.
-
-Facts and outcomes are frozen dataclasses; existing targets remain mutable.
-There is no default collector or fallback route. Invalid registry keys, mismatched
-collector kinds, and missing callable methods raise `ValueError` before iteration.
-Missing routes, invalid target kinds, invalid result types, and ordinary collector
-exceptions instead produce failed outcomes and processing continues. Exception
-messages and tracebacks are not retained, to avoid exposing sensitive diagnostics.
-Process-control exceptions such as `KeyboardInterrupt`, and errors advancing the
-input iterable, propagate. Inventory validation remains the loader's responsibility.
-
-## Linux discovery over SSH
-
-`LinuxSSHCollector` implements the same collector protocol and returns the
-existing `LinuxFacts(distribution, kernel_release)`. Register it explicitly:
-
-```python
-import os
-
-from infra_discovery.linux_ssh import LinuxSSHCollector, SSHCredentials
-
-# Supply these values at runtime, separately from inventory.
-credentials = SSHCredentials(
-    username=os.environ["DISCOVERY_SSH_USERNAME"],
-    key_filename=os.environ["DISCOVERY_SSH_KEY_FILE"],
-    passphrase=os.environ.get("DISCOVERY_SSH_KEY_PASSPHRASE"),
-)
-linux = LinuxSSHCollector(
-    credentials=credentials,
-    known_hosts=os.environ["DISCOVERY_SSH_KNOWN_HOSTS"],
-    connection_timeout=10,
-    command_timeout=10,
-)
-outcomes = discover(targets, {TargetKind.LINUX: linux}, max_workers=4)
-```
-
-Alternatively supply `password=` instead of `key_filename=`/`passphrase=`.
-Exactly one authentication method is required. Credentials and the known-hosts
-path are excluded from object representations; they are never added to targets,
-facts, or outcomes. Do not serialize the runtime credential object. This module
-does not load environment variables itself, prompt, or store credentials.
-
-Paramiko is the sole added direct dependency. Each call creates and closes its
-own client and channel. The collector's configuration is immutable, so it can be
-shared across discovery workers. One collector uses one credential set and SSH
-port (default 22); per-target credential lookup is outside v1. SSH agents, implicit
-key searches, and SSH client configuration files are not used. An explicit
-OpenSSH known-hosts file is required; provision trusted host keys beforehand.
-Unknown and changed keys fail without automatic enrollment.
-
-The fixed, unprivileged command checks `uname -s`, reads `uname -r`, and reads
-`/etc/os-release`, falling back to `/usr/lib/os-release` when the former is not
-readable. Distribution is `NAME`, with `ID` as fallback. Parsing never executes
-the release file. A POSIX-compatible login shell, `uname`, `cat`, and a valid
-UTF-8 os-release file are required; unsupported or malformed hosts fail without
-partial facts. No additional Linux facts are collected.
-
-TCP connection, banner, and authentication each have an explicit timeout;
-an independent `connection_timeout` deadline also spans all TCP address attempts
-and SSH setup/authentication after DNS resolution. It closes the owned socket
-directly, including packet-writing retries before Paramiko's auth timer begins.
-Channel opening has its own timeout. A command deadline also covers channel
-opening, exec acknowledgement, both output streams, EOF, and exit status, including
-trickling output. Combined stdout/stderr is limited to 64 KiB. Nonzero or missing
-exit status fails. These are phase limits, not a single whole-target deadline:
-OS hostname resolution and local key/known-hosts file access remain subject to
-OS behavior. Use IP targets when predictable DNS-independent timing is needed.
-
-All ordinary collection failures, including authentication, host-key checks,
-connection errors, command failures, malformed data, and cleanup errors, raise
-a generic `LinuxSSHError`. Existing discovery maps it to `COLLECTION_FAILED`
-and continues other targets. Raw exception chains, stderr, and this collector's
-Paramiko transport logs are suppressed to keep connection diagnostics private.
-Process-control exceptions still propagate after cleanup.
-
-SSH tests replace every client with fakes, exercise real deadline timers, and
-check concurrent session isolation. They require no SSH server, keys, credentials,
-or infrastructure access. Actual SSH interoperability is not tested by this suite.
-
-## Network discovery over SSH
-
-`NetworkSSHCollector` uses the existing Paramiko dependency and collector route.
-It supports two explicit platform profiles, selected by target ID in runtime
-configuration. Inventory still contains exactly `id`, `host`, and `kind`; neither
-`Target` nor `NetworkFacts` has changed.
-
-```python
-from infra_discovery.network_ssh import NetworkSSHCollector
-from infra_discovery.ssh import SSHCredentials
-
-# Reuse runtime credentials and the trusted known-hosts path from the example above.
-network = NetworkSSHCollector(
-    credentials=credentials,
-    known_hosts=os.environ["DISCOVERY_SSH_KNOWN_HOSTS"],
-    platforms={"switch-1": "arista_eos", "router-1": "juniper_junos"},
-    connection_timeout=10,
-    command_timeout=10,
-)
-outcomes = discover(targets, {
-    TargetKind.NETWORK: network,
-    TargetKind.LINUX: linux,
-}, max_workers=4)
-```
-
-| Platform | Fixed read-only command | Interface names |
-| --- | --- | --- |
-| `arista_eos` | `show interfaces \| json` | Keys of the `interfaces` object |
-| `juniper_junos` | `show interfaces terse \| display xml \| no-more` | Physical and logical interface names |
-
-The returned `NetworkFacts.platform` is the configured OS family identifier,
-not a detected OS version or hardware model. Interface names are validated,
-unique, and sorted. Other response fields (addresses, descriptions, counters,
-banners) are discarded. Empty interface lists, malformed or ambiguous data,
-command errors, and missing/unsupported platform selections fail the target;
-there is no automatic platform detection or fallback. Junos XML namespaces are
-handled without depending on a particular release; DTDs/entities are rejected.
-These profiles require noninteractive SSH exec support, UTF-8 structured output,
-and an account authorized to run the command directly. Interactive-only devices,
-other vendors, privilege escalation, and large responses above 64 KiB are outside
-v1. Device interoperability still needs validation against your OS releases;
-the suite uses sanitized examples, not hardware certification.
-
-Paramiko is appropriate here because both profiles use SSH exec with structured
-output; interactive terminal negotiation and another automation dependency are
-unnecessary. Credentials and bounded SSH execution live in `infra_discovery.ssh`
-and are shared with Linux. The original `linux_ssh.SSHCredentials` import remains
-supported. There are no new dependencies.
-
-Each call owns its SSH client, transport, channel, buffer, and deadline timer.
-The collector is frozen and copies the platform mapping into a read-only snapshot.
-One collector uses one runtime credential set, known-hosts file, and port; no
-credentials or connection configuration are attached to inventory or facts.
-No agent, implicit key lookup, enable secrets, or credential persistence is used.
-
-Unknown and changed SSH host keys are rejected against the explicit provisioned
-known-hosts file; there is no trust-on-first-use or insecure opt-out. TCP connect,
-banner, and authentication retain explicit Paramiko timeouts. Independently,
-`connection_timeout` bounds all TCP address attempts and SSH setup/authentication
-after DNS resolution. Each call creates and owns its TCP sockets before calling
-`socket.connect`, and supplies the connected socket to `SSHClient.connect`.
-Paramiko uses that socket but the runner retains cleanup responsibility, including
-on `KeyboardInterrupt` before a Transport exists. Failed attempts are closed
-immediately; final cleanup closes all owned sockets before closing the client.
-Cancellation propagates even if secondary cleanup raises an ordinary exception.
-
-The connection deadline callback only shuts down and closes the socket: it never
-takes Paramiko locks, which authentication may hold while retrying packet writes.
-Collection stays on its calling thread until the interrupted SSH operation exits;
-no blocked connection task is abandoned. Timers are cancelled and their joins
-are bounded to 0.1 seconds. A separate
-`command_timeout` deadline covers channel opening, exec acknowledgement, output,
-EOF, and exit status. It shuts down the call's socket and transport to interrupt
-protocol/rekey stalls. Combined stdout/stderr is capped at 64 KiB. Cleanup runs
-on success, errors, and cancellation. DNS resolution and local file access remain
-subject to OS behavior; these phase bounds are not a whole-target deadline.
-Closing a socket cannot interrupt local private-key file reads or CPU-bound key
-processing inside Paramiko; an expired deadline is checked again when connect
-returns. Normal OS socket shutdown/close semantics are required.
-
-Ordinary failures raise generic `NetworkSSHError` with no original exception
-chain; discovery maps them to `COLLECTION_FAILED` while other targets continue.
-The shared transport uses a private diagnostic sink and context-local suppression
-of host-key parser messages; unrelated Paramiko/application logging is preserved.
-No root logger configuration or process-wide logging disable is introduced.
-
-Offline tests replace SSH clients and sockets, and exercise real Paramiko channel
-and transport methods against simulated stalled peers. They cover both profiles,
-authentication/connection/command failures, output validation, cleanup, concurrent
-use of one collector, credential boundaries, and diagnostic isolation.
-
-## Development
-
-From the repository root, create and activate a virtual environment (PowerShell):
-
-```powershell
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
+```sh
 python -m pip install -e ".[dev]"
 python -m pytest
+git diff --check
 ```
 
-The `dev` extra installs pytest. Installing the project makes its `src` package
-available to Python and the tests.
+On Windows, if the default pytest temporary directory is inaccessible, use:
 
-## Continuous integration
+```powershell
+python -m pytest --basetemp=.pytest-temp
+```
 
-GitHub Actions runs on pull requests targeting `main` and pushes to `main`.
-It uses Python 3.14 on Ubuntu, installs the project and test dependencies with
-`python -m pip install ".[dev]"`, and runs the complete suite with
-`python -m pytest`.
+The suite uses mocks and fixtures and must not contact real infrastructure.
+`dev` installs pytest and the build tools separately from runtime dependencies.
+No static-check tooling is configured. GitHub Actions runs the suite on pull
+requests targeting `main` and pushes to `main`, using Python 3.14 on Ubuntu.
+See [AGENTS.md](AGENTS.md) for contribution and review requirements.
+
+Build both a source distribution and a wheel:
+
+```sh
+python -m build
+```
+
+Artifacts are written to `dist/`; by default the wheel is built from the source
+distribution. For an offline build with build dependencies already installed:
+
+```sh
+python -m build --no-isolation
+```
+
+To evaluate the packaged application, create a fresh virtual environment, install
+`dist/infra_discovery-1.0.0-py3-none-any.whl`, run `python -m pip check`, then change
+to a directory outside the repository and run `infra-discovery --help` and the
+empty-inventory example. Do not set `PYTHONPATH` to the checkout. Offline wheel
+installation requires the runtime dependency wheels in a local wheelhouse; use
+pip's `--no-index --find-links` options in that case.
+
+## Project layout
+
+| Path | Responsibility |
+| --- | --- |
+| `src/infra_discovery/cli.py` | Argument handling, orchestration, exit codes. |
+| `inventory.py`, `configuration.py` | Strict input loading, connection settings, secret prompts. |
+| `models.py` | Targets, facts, errors, structured outcomes. |
+| `discovery.py`, `collectors.py` | Worker orchestration, collector protocol, offline fake collectors. |
+| `ssh.py` | Credentials, host verification, bounded SSH execution and cleanup. |
+| `linux_ssh.py`, `network_ssh.py` | Fixed commands and response parsing. |
+| `output.py` | Human-readable and versioned JSON serialization. |
+| `tests/` | Offline validation, CLI, concurrency, and SSH regression coverage. |
+| `examples/` | Sanitized inventory and connection templates. |
+
+Module filenames above are relative to `src/infra_discovery/`.

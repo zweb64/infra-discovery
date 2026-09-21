@@ -25,6 +25,8 @@ env/
 
 # Testing / coverage
 .pytest_cache/
+.pytest-temp/
+.release-check/
 .coverage
 htmlcov/
 
@@ -48,3 +50,6 @@ inventory.json
 # Local configuration containing real infrastructure
 config.local.yaml
 config.local.yml
+config.local.json
+connections.local.json
+known_hosts.local
