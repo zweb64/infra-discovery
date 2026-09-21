@@ -1,0 +1,17 @@
+{
+  "linux": {
+    "username": "discovery",
+    "known_hosts": "known_hosts.local"
+  },
+  "network": {
+    "username": "discovery",
+    "known_hosts": "known_hosts.local",
+    "port": 22,
+    "connection_timeout": 10,
+    "command_timeout": 10,
+    "platforms": {
+      "switch-01": "arista_eos",
+      "router-01": "juniper_junos"
+    }
+  }
+}

@@ -2,10 +2,10 @@
 
 ## Project Structure & Module Organization
 
-This Python 3.11+ repository develops an infrastructure discovery system and a reliable AI-assisted engineering workflow: Codex should eventually implement issue-scoped changes, independently review them, remediate failures, and submit changes for human PR review.
+This Python 3.11+ repository provides read-only Linux and network-device discovery over SSH. Human and AI-assisted contributions follow the same requirements for scoped changes, independent review, verification, and human PR approval.
 
-- `src/infra_discovery/`: importable Python package; `models.py` holds the developing domain models.
-- `tests/`: test package, currently without test cases.
+- `src/infra_discovery/`: CLI, validated inputs, domain models, discovery orchestration, SSH collectors, and output serialization.
+- `tests/`: offline pytest coverage using sanitized fixtures and simulated SSH sessions.
 - `examples/`: location for sanitized usage examples and sample configuration.
 - `pyproject.toml`: package metadata and setuptools build configuration.
 - `README.md`: setup and usage documentation.
@@ -16,11 +16,12 @@ Run commands from the repository root:
 
 - `python -m venv .venv`: create a local virtual environment.
 - `.\.venv\Scripts\Activate.ps1`: activate it in PowerShell.
-- `python -m pip install -e .`: install the package in editable mode.
-- `python -m pip wheel . --no-deps --wheel-dir dist`: build a wheel using the configured setuptools backend.
-- `python -m pytest`: run tests once pytest is installed; it is not yet declared in project dependencies.
+- `python -m pip install -e ".[dev]"`: install the package and development tools in editable mode.
+- `python -m build`: build a source distribution and wheel using the configured setuptools backend.
+- `python -m pytest`: run the complete offline test suite. On Windows, use `--basetemp=.pytest-temp` if the default temporary directory is inaccessible.
+- `git diff --check`: check changes for whitespace errors.
 
-No CLI entry point or static-check tooling is configured yet.
+The installed CLI is `infra-discovery`; use `infra-discovery --help` for syntax. No static-check tooling is configured.
 
 ## Coding Style & Naming Conventions
 
@@ -42,7 +43,7 @@ Keep changes scoped to the requested task; avoid unrelated refactors and preserv
 
 Follow the existing `chore: initialize project structure` prefix style, for example `feat: add target validation`.
 
-Once the PR workflow is established, use task-specific branches; never commit directly to `main`. PRs should describe requirements addressed and verification results, link relevant issues, and receive human review.
+Use task-specific branches; never commit directly to `main`. PRs should describe requirements addressed and verification results, link relevant issues, and receive human review.
 
 ## Security & Configuration
 
