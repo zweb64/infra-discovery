@@ -121,11 +121,14 @@ The fixed, unprivileged command checks `uname -s`, reads `uname -r`, and reads
 readable. Distribution is `NAME`, with `ID` as fallback. Parsing never executes
 the release file. A POSIX-compatible login shell, `uname`, `cat`, and a valid
 UTF-8 os-release file are required; unsupported or malformed hosts fail without
-partial facts. No additional facts or real network-device collector are included.
+partial facts. No additional Linux facts are collected.
 
 TCP connection, banner, and authentication each have an explicit timeout;
-channel opening has its own timeout. A separate command deadline covers the
-exec acknowledgement, both output streams, EOF, and exit status, including
+an independent `connection_timeout` deadline also spans all TCP address attempts
+and SSH setup/authentication after DNS resolution. It closes the owned socket
+directly, including packet-writing retries before Paramiko's auth timer begins.
+Channel opening has its own timeout. A command deadline also covers channel
+opening, exec acknowledgement, both output streams, EOF, and exit status, including
 trickling output. Combined stdout/stderr is limited to 64 KiB. Nonzero or missing
 exit status fails. These are phase limits, not a single whole-target deadline:
 OS hostname resolution and local key/known-hosts file access remain subject to
@@ -141,6 +144,97 @@ Process-control exceptions still propagate after cleanup.
 SSH tests replace every client with fakes, exercise real deadline timers, and
 check concurrent session isolation. They require no SSH server, keys, credentials,
 or infrastructure access. Actual SSH interoperability is not tested by this suite.
+
+## Network discovery over SSH
+
+`NetworkSSHCollector` uses the existing Paramiko dependency and collector route.
+It supports two explicit platform profiles, selected by target ID in runtime
+configuration. Inventory still contains exactly `id`, `host`, and `kind`; neither
+`Target` nor `NetworkFacts` has changed.
+
+```python
+from infra_discovery.network_ssh import NetworkSSHCollector
+from infra_discovery.ssh import SSHCredentials
+
+# Reuse runtime credentials and the trusted known-hosts path from the example above.
+network = NetworkSSHCollector(
+    credentials=credentials,
+    known_hosts=os.environ["DISCOVERY_SSH_KNOWN_HOSTS"],
+    platforms={"switch-1": "arista_eos", "router-1": "juniper_junos"},
+    connection_timeout=10,
+    command_timeout=10,
+)
+outcomes = discover(targets, {
+    TargetKind.NETWORK: network,
+    TargetKind.LINUX: linux,
+}, max_workers=4)
+```
+
+| Platform | Fixed read-only command | Interface names |
+| --- | --- | --- |
+| `arista_eos` | `show interfaces \| json` | Keys of the `interfaces` object |
+| `juniper_junos` | `show interfaces terse \| display xml \| no-more` | Physical and logical interface names |
+
+The returned `NetworkFacts.platform` is the configured OS family identifier,
+not a detected OS version or hardware model. Interface names are validated,
+unique, and sorted. Other response fields (addresses, descriptions, counters,
+banners) are discarded. Empty interface lists, malformed or ambiguous data,
+command errors, and missing/unsupported platform selections fail the target;
+there is no automatic platform detection or fallback. Junos XML namespaces are
+handled without depending on a particular release; DTDs/entities are rejected.
+These profiles require noninteractive SSH exec support, UTF-8 structured output,
+and an account authorized to run the command directly. Interactive-only devices,
+other vendors, privilege escalation, and large responses above 64 KiB are outside
+v1. Device interoperability still needs validation against your OS releases;
+the suite uses sanitized examples, not hardware certification.
+
+Paramiko is appropriate here because both profiles use SSH exec with structured
+output; interactive terminal negotiation and another automation dependency are
+unnecessary. Credentials and bounded SSH execution live in `infra_discovery.ssh`
+and are shared with Linux. The original `linux_ssh.SSHCredentials` import remains
+supported. There are no new dependencies.
+
+Each call owns its SSH client, transport, channel, buffer, and deadline timer.
+The collector is frozen and copies the platform mapping into a read-only snapshot.
+One collector uses one runtime credential set, known-hosts file, and port; no
+credentials or connection configuration are attached to inventory or facts.
+No agent, implicit key lookup, enable secrets, or credential persistence is used.
+
+Unknown and changed SSH host keys are rejected against the explicit provisioned
+known-hosts file; there is no trust-on-first-use or insecure opt-out. TCP connect,
+banner, and authentication retain explicit Paramiko timeouts. Independently,
+`connection_timeout` bounds all TCP address attempts and SSH setup/authentication
+after DNS resolution. Each call creates and owns its TCP sockets before calling
+`socket.connect`, and supplies the connected socket to `SSHClient.connect`.
+Paramiko uses that socket but the runner retains cleanup responsibility, including
+on `KeyboardInterrupt` before a Transport exists. Failed attempts are closed
+immediately; final cleanup closes all owned sockets before closing the client.
+Cancellation propagates even if secondary cleanup raises an ordinary exception.
+
+The connection deadline callback only shuts down and closes the socket: it never
+takes Paramiko locks, which authentication may hold while retrying packet writes.
+Collection stays on its calling thread until the interrupted SSH operation exits;
+no blocked connection task is abandoned. Timers are cancelled and their joins
+are bounded to 0.1 seconds. A separate
+`command_timeout` deadline covers channel opening, exec acknowledgement, output,
+EOF, and exit status. It shuts down the call's socket and transport to interrupt
+protocol/rekey stalls. Combined stdout/stderr is capped at 64 KiB. Cleanup runs
+on success, errors, and cancellation. DNS resolution and local file access remain
+subject to OS behavior; these phase bounds are not a whole-target deadline.
+Closing a socket cannot interrupt local private-key file reads or CPU-bound key
+processing inside Paramiko; an expired deadline is checked again when connect
+returns. Normal OS socket shutdown/close semantics are required.
+
+Ordinary failures raise generic `NetworkSSHError` with no original exception
+chain; discovery maps them to `COLLECTION_FAILED` while other targets continue.
+The shared transport uses a private diagnostic sink and context-local suppression
+of host-key parser messages; unrelated Paramiko/application logging is preserved.
+No root logger configuration or process-wide logging disable is introduced.
+
+Offline tests replace SSH clients and sockets, and exercise real Paramiko channel
+and transport methods against simulated stalled peers. They cover both profiles,
+authentication/connection/command failures, output validation, cleanup, concurrent
+use of one collector, credential boundaries, and diagnostic isolation.
 
 ## Development
 
